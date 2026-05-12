@@ -2,24 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import torch
 from torch import Tensor
 
-from wav_jepa_minimal.defaults import AUDIOSET_DEFAULTS
-
-
-@dataclass(frozen=True)
-class MaskConfig:
-    """Configuration for AudioSet-style contiguous time-block masks."""
-
-    context_mask_prob: float = AUDIOSET_DEFAULTS.context_mask_prob
-    context_mask_length: int = AUDIOSET_DEFAULTS.context_mask_length
-    target_prob: float = AUDIOSET_DEFAULTS.target_prob
-    target_length: int = AUDIOSET_DEFAULTS.target_length
-    target_masks_per_context: int = AUDIOSET_DEFAULTS.target_masks_per_context
-    ratio_cutoff: float = AUDIOSET_DEFAULTS.ratio_cutoff
+from wav_jepa_minimal.config import MaskConfig
 
 
 def _contiguous_mask(
