@@ -1,6 +1,15 @@
 """Minimal WavJEPA-style training package."""
 
-from wav_jepa_minimal.defaults import AUDIOSET_DEFAULTS
-from wav_jepa_minimal.model import WavJepaConfig, WavJepaModel
+from __future__ import annotations
 
-__all__ = ["AUDIOSET_DEFAULTS", "WavJepaConfig", "WavJepaModel"]
+from wav_jepa_minimal.config import AUDIOSET_DEFAULTS, MaskConfig, WavJepaConfig
+
+__all__ = ["AUDIOSET_DEFAULTS", "MaskConfig", "WavJepaConfig", "WavJepaModel"]
+
+
+def __getattr__(name: str) -> object:
+    if name == "WavJepaModel":
+        from wav_jepa_minimal.model import WavJepaModel
+
+        return WavJepaModel
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

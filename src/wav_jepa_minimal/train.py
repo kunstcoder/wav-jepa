@@ -10,8 +10,12 @@ import torch
 from torch.utils.data import DataLoader
 
 from wav_jepa_minimal.audio import SyntheticWaveDataset, WaveDirectoryDataset
-from wav_jepa_minimal.defaults import AUDIOSET_DEFAULTS
-from wav_jepa_minimal.model import WavJepaConfig, WavJepaModel
+from wav_jepa_minimal.config import (
+    AUDIOSET_DEFAULTS,
+    WavJepaConfig,
+    parse_checkpoint_interval,
+)
+from wav_jepa_minimal.model import WavJepaModel
 
 
 def parse_args() -> argparse.Namespace:
@@ -23,6 +27,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-name", default=AUDIOSET_DEFAULTS.dataset_name)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--max-steps", type=int, default=AUDIOSET_DEFAULTS.max_steps)
+    parser.add_argument(
+        "--checkpoint-interval-steps",
+        type=parse_checkpoint_interval,
+        default=AUDIOSET_DEFAULTS.checkpoint_interval_steps,
+        metavar="STEPS",
+        help=(
+            "Save a numbered checkpoint every N global training steps, e.g. "
+            "10000 saves at 10000, 20000, ... . Use 0 or 'none' to disable."
+        ),
+    )
     parser.add_argument("--batch-size", type=int, default=AUDIOSET_DEFAULTS.batch_size)
     parser.add_argument("--learning-rate", type=float, default=AUDIOSET_DEFAULTS.learning_rate)
     parser.add_argument("--adam-beta1", type=float, default=AUDIOSET_DEFAULTS.adam_beta1)
@@ -33,8 +47,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--samples-per-audio", type=int, default=AUDIOSET_DEFAULTS.samples_per_audio
     )
-    parser.add_argument("--embed-dim", type=int, default=AUDIOSET_DEFAULTS.encoder_dim)
-    parser.add_argument("--predictor-dim", type=int, default=AUDIOSET_DEFAULTS.decoder_dim)
+    parser.add_argument(
+        "--encoder-dim",
+        "--embed-dim",
+        dest="encoder_dim",
+        type=int,
+        default=AUDIOSET_DEFAULTS.encoder_dim,
+        help="Transformer encoder dimension. --embed-dim is kept as a legacy alias.",
+    )
+    parser.add_argument("--predictor-dim", type=int, default=AUDIOSET_DEFAULTS.predictor_dim)
     parser.add_argument(
         "--transformer-layers", type=int, default=AUDIOSET_DEFAULTS.transformer_layers
     )
@@ -93,6 +114,7 @@ def save_checkpoint(
     optimizer: torch.optim.Optimizer,
     epoch: int,
     step: int,
+    checkpoint_name: str = "checkpoint_last.pt",
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint = {
@@ -102,7 +124,7 @@ def save_checkpoint(
         "epoch": epoch,
         "step": step,
     }
-    torch.save(checkpoint, output_dir / "checkpoint_last.pt")
+    torch.save(checkpoint, output_dir / checkpoint_name)
     with (output_dir / "config.json").open("w", encoding="utf-8") as handle:
         json.dump(model.config.to_dict(), handle, indent=2)
 
@@ -116,7 +138,7 @@ def train(args: argparse.Namespace) -> None:
         sample_rate=args.sample_rate,
         process_seconds=args.process_seconds,
         samples_per_audio=args.samples_per_audio,
-        embed_dim=args.embed_dim,
+        encoder_dim=args.encoder_dim,
         predictor_dim=args.predictor_dim,
         transformer_layers=args.transformer_layers,
         attention_heads=args.attention_heads,
@@ -146,7 +168,8 @@ def train(args: argparse.Namespace) -> None:
                 "batch_size": args.batch_size,
                 "learning_rate": args.learning_rate,
                 "weight_decay": args.weight_decay,
-                "embed_dim": config.embed_dim,
+                "checkpoint_interval_steps": args.checkpoint_interval_steps,
+                "encoder_dim": config.encoder_dim,
                 "predictor_dim": config.predictor_dim,
                 "transformer_layers": config.transformer_layers,
                 "attention_heads": config.attention_heads,
@@ -156,6 +179,7 @@ def train(args: argparse.Namespace) -> None:
         print(f"tensorboard_log_dir={tensorboard_log_dir}")
 
     global_step = 0
+    checkpoint_interval_steps = args.checkpoint_interval_steps
     try:
         for epoch in range(args.epochs):
             epoch_loss = 0.0
@@ -189,6 +213,21 @@ def train(args: argparse.Namespace) -> None:
                     writer.add_scalar("train/learning_rate", current_lr, global_step)
                     writer.add_scalar("train/grad_norm", float(grad_norm), global_step)
                     writer.add_scalar("train/ema_decay", ema_decay, global_step)
+
+                if (
+                    checkpoint_interval_steps > 0
+                    and global_step % checkpoint_interval_steps == 0
+                ):
+                    checkpoint_name = f"checkpoint_step_{global_step:08d}.pt"
+                    save_checkpoint(
+                        args.output_dir,
+                        model,
+                        optimizer,
+                        epoch=epoch + 1,
+                        step=global_step,
+                        checkpoint_name=checkpoint_name,
+                    )
+                    print(f"saved_checkpoint={args.output_dir / checkpoint_name}")
 
                 if global_step == 1 or global_step % 10 == 0:
                     print(

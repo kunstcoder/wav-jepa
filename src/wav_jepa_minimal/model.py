@@ -2,65 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-
 import torch
 from torch import Tensor, nn
 
-from wav_jepa_minimal.defaults import AUDIOSET_DEFAULTS, WAVJEPA_CONV_LAYERS_SPEC
-from wav_jepa_minimal.masking import MaskConfig, sample_context_target_masks
-
-
-@dataclass(frozen=True)
-class WavJepaConfig:
-    """Model and AudioSet hyperparameters mirrored from upstream configs."""
-
-    dataset_name: str = AUDIOSET_DEFAULTS.dataset_name
-    sample_rate: int = AUDIOSET_DEFAULTS.sample_rate
-    process_seconds: float = AUDIOSET_DEFAULTS.process_seconds
-    samples_per_audio: int = AUDIOSET_DEFAULTS.samples_per_audio
-    in_channels: int = AUDIOSET_DEFAULTS.in_channels
-    feature_dim: int = AUDIOSET_DEFAULTS.feature_dim
-    embed_dim: int = AUDIOSET_DEFAULTS.encoder_dim
-    predictor_dim: int = AUDIOSET_DEFAULTS.decoder_dim
-    transformer_layers: int = AUDIOSET_DEFAULTS.transformer_layers
-    attention_heads: int = AUDIOSET_DEFAULTS.attention_heads
-    mlp_ratio: int = 4
-    ema_decay: float = AUDIOSET_DEFAULTS.ema_decay
-    ema_end_decay: float = AUDIOSET_DEFAULTS.ema_end_decay
-    ema_anneal_end_step: int = AUDIOSET_DEFAULTS.ema_anneal_end_step
-    context_mask_prob: float = AUDIOSET_DEFAULTS.context_mask_prob
-    context_mask_length: int = AUDIOSET_DEFAULTS.context_mask_length
-    target_prob: float = AUDIOSET_DEFAULTS.target_prob
-    target_length: int = AUDIOSET_DEFAULTS.target_length
-    target_masks_per_context: int = AUDIOSET_DEFAULTS.target_masks_per_context
-    ratio_cutoff: float = AUDIOSET_DEFAULTS.ratio_cutoff
-
-    @property
-    def seconds(self) -> float:
-        """Backward-compatible alias for the upstream ``process_seconds`` name."""
-
-        return self.process_seconds
-
-    def to_dict(self) -> dict[str, int | float | str]:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, values: dict[str, int | float | str]) -> WavJepaConfig:
-        values = dict(values)
-        if "seconds" in values and "process_seconds" not in values:
-            values["process_seconds"] = values.pop("seconds")
-        legacy_key_map = {
-            "context_ratio": "context_mask_prob",
-            "target_ratio": "target_prob",
-            "min_target_patches": "target_length",
-        }
-        for old_key, new_key in legacy_key_map.items():
-            if old_key in values and new_key not in values:
-                values[new_key] = values.pop(old_key)
-            else:
-                values.pop(old_key, None)
-        return cls(**values)
+from wav_jepa_minimal.config import WAVJEPA_CONV_LAYERS_SPEC, MaskConfig, WavJepaConfig
+from wav_jepa_minimal.masking import sample_context_target_masks
 
 
 class ConvPatchEncoder(nn.Module):
@@ -109,11 +55,11 @@ class TransformerStack(nn.Module):
 
     def __init__(self, config: WavJepaConfig, max_patches: int) -> None:
         super().__init__()
-        self.position = nn.Parameter(torch.zeros(1, max_patches, config.embed_dim))
+        self.position = nn.Parameter(torch.zeros(1, max_patches, config.encoder_dim))
         layer = nn.TransformerEncoderLayer(
-            d_model=config.embed_dim,
+            d_model=config.encoder_dim,
             nhead=config.attention_heads,
-            dim_feedforward=config.embed_dim * config.mlp_ratio,
+            dim_feedforward=config.encoder_dim * config.mlp_ratio,
             dropout=0.0,
             activation="gelu",
             batch_first=True,
@@ -121,7 +67,7 @@ class TransformerStack(nn.Module):
             layer_norm_eps=1e-6,
         )
         self.encoder = nn.TransformerEncoder(layer, num_layers=config.transformer_layers)
-        self.norm = nn.LayerNorm(config.embed_dim)
+        self.norm = nn.LayerNorm(config.encoder_dim)
 
     def forward(self, tokens: Tensor) -> Tensor:
         tokens = tokens + self.position[:, : tokens.size(1)]
@@ -134,10 +80,10 @@ class Predictor(nn.Module):
     def __init__(self, config: WavJepaConfig) -> None:
         super().__init__()
         self.network = nn.Sequential(
-            nn.Linear(config.embed_dim, config.predictor_dim),
+            nn.Linear(config.encoder_dim, config.predictor_dim),
             nn.GELU(),
             nn.LayerNorm(config.predictor_dim),
-            nn.Linear(config.predictor_dim, config.embed_dim),
+            nn.Linear(config.predictor_dim, config.encoder_dim),
         )
 
     def forward(self, context_tokens: Tensor) -> Tensor:
@@ -152,9 +98,9 @@ class WavJepaModel(nn.Module):
         self.config = config
         self.feature_extractor = ConvPatchEncoder(config.in_channels)
         self.feature_norm = nn.LayerNorm(self.feature_extractor.embedding_dim)
-        if self.feature_extractor.embedding_dim != config.embed_dim:
+        if self.feature_extractor.embedding_dim != config.encoder_dim:
             self.feature_to_encoder = nn.Linear(
-                self.feature_extractor.embedding_dim, config.embed_dim
+                self.feature_extractor.embedding_dim, config.encoder_dim
             )
         else:
             self.feature_to_encoder = nn.Identity()
@@ -162,7 +108,7 @@ class WavJepaModel(nn.Module):
         self.context_encoder = TransformerStack(config, max_patches=max_patches)
         self.target_encoder = TransformerStack(config, max_patches=max_patches)
         self.predictor = Predictor(config)
-        self.mask_token = nn.Parameter(torch.zeros(1, 1, config.embed_dim))
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, config.encoder_dim))
         self.mask_config = MaskConfig(
             context_mask_prob=config.context_mask_prob,
             context_mask_length=config.context_mask_length,

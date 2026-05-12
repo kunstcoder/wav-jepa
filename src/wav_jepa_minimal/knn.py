@@ -11,7 +11,8 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 
 from wav_jepa_minimal.audio import WaveDirectoryDataset
-from wav_jepa_minimal.model import WavJepaConfig, WavJepaModel
+from wav_jepa_minimal.config import WavJepaConfig
+from wav_jepa_minimal.model import WavJepaModel
 
 
 def parse_args() -> argparse.Namespace:
