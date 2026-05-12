@@ -41,6 +41,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--attention-heads", type=int, default=AUDIOSET_DEFAULTS.attention_heads)
     parser.add_argument("--steps-per-epoch", type=int, default=None)
     parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument(
+        "--tensorboard-log-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Directory for TensorBoard event files. Defaults to "
+            "<output-dir>/tensorboard."
+        ),
+    )
+    parser.add_argument(
+        "--no-tensorboard",
+        action="store_true",
+        help="Disable TensorBoard scalar and hparams logging.",
+    )
     parser.add_argument("--seed", type=int, default=AUDIOSET_DEFAULTS.seed)
     parser.add_argument(
         "--synthetic",
@@ -115,32 +129,83 @@ def train(args: argparse.Namespace) -> None:
         weight_decay=args.weight_decay,
     )
 
+    tensorboard_log_dir = args.tensorboard_log_dir or args.output_dir / "tensorboard"
+    writer = None
+    if not args.no_tensorboard:
+        from torch.utils.tensorboard import SummaryWriter
+
+        writer = SummaryWriter(log_dir=str(tensorboard_log_dir))
+    if writer is not None:
+        writer.add_text("dataset/name", config.dataset_name, 0)
+        writer.add_hparams(
+            {
+                "dataset_name": config.dataset_name,
+                "sample_rate": config.sample_rate,
+                "process_seconds": config.process_seconds,
+                "samples_per_audio": config.samples_per_audio,
+                "batch_size": args.batch_size,
+                "learning_rate": args.learning_rate,
+                "weight_decay": args.weight_decay,
+                "embed_dim": config.embed_dim,
+                "predictor_dim": config.predictor_dim,
+                "transformer_layers": config.transformer_layers,
+                "attention_heads": config.attention_heads,
+            },
+            {"train/loss": 0.0},
+        )
+        print(f"tensorboard_log_dir={tensorboard_log_dir}")
+
     global_step = 0
-    for epoch in range(args.epochs):
-        for batch_step, audio in enumerate(loader):
-            if args.steps_per_epoch is not None and batch_step >= args.steps_per_epoch:
-                break
+    try:
+        for epoch in range(args.epochs):
+            epoch_loss = 0.0
+            epoch_steps = 0
+            for batch_step, audio in enumerate(loader):
+                if args.steps_per_epoch is not None and batch_step >= args.steps_per_epoch:
+                    break
+                if global_step >= args.max_steps:
+                    break
+                audio = audio.to(device)
+                loss, metrics = model.forward_loss(audio)
+                loss.backward()
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                global_step += 1
+                model.update_target_encoder(step=global_step)
+                ema_decay = model._ema_decay(global_step)
+                current_lr = optimizer.param_groups[0]["lr"]
+                epoch_loss += metrics["loss"]
+                epoch_steps += 1
+
+                if writer is not None:
+                    writer.add_scalar("train/loss", metrics["loss"], global_step)
+                    writer.add_scalar(
+                        "train/context_fraction", metrics["context_fraction"], global_step
+                    )
+                    writer.add_scalar(
+                        "train/target_fraction", metrics["target_fraction"], global_step
+                    )
+                    writer.add_scalar("train/learning_rate", current_lr, global_step)
+                    writer.add_scalar("train/grad_norm", float(grad_norm), global_step)
+                    writer.add_scalar("train/ema_decay", ema_decay, global_step)
+
+                if global_step == 1 or global_step % 10 == 0:
+                    print(
+                        f"dataset={config.dataset_name} epoch={epoch + 1} step={global_step} "
+                        f"loss={metrics['loss']:.4f} "
+                        f"context={metrics['context_fraction']:.2f} "
+                        f"target={metrics['target_fraction']:.2f}"
+                    )
+            if writer is not None and epoch_steps > 0:
+                writer.add_scalar("epoch/loss", epoch_loss / epoch_steps, epoch + 1)
+            save_checkpoint(args.output_dir, model, optimizer, epoch=epoch + 1, step=global_step)
             if global_step >= args.max_steps:
                 break
-            audio = audio.to(device)
-            loss, metrics = model.forward_loss(audio)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-            optimizer.step()
-            optimizer.zero_grad(set_to_none=True)
-            global_step += 1
-            model.update_target_encoder(step=global_step)
-
-            if global_step == 1 or global_step % 10 == 0:
-                print(
-                    f"dataset={config.dataset_name} epoch={epoch + 1} step={global_step} "
-                    f"loss={metrics['loss']:.4f} "
-                    f"context={metrics['context_fraction']:.2f} "
-                    f"target={metrics['target_fraction']:.2f}"
-                )
-        save_checkpoint(args.output_dir, model, optimizer, epoch=epoch + 1, step=global_step)
-        if global_step >= args.max_steps:
-            break
+    finally:
+        if writer is not None:
+            writer.flush()
+            writer.close()
 
 
 def main() -> None:
