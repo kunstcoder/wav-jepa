@@ -119,24 +119,3 @@ class WaveDirectoryDataset(Dataset[Tensor]):
                 raise RuntimeError("Label discovery was disabled for a labeled dataset")
             return audio, item.label
         return audio
-
-
-class SyntheticWaveDataset(Dataset[Tensor]):
-    """Small deterministic waveform dataset for smoke tests."""
-
-    def __init__(self, length: int, sample_rate: int, seconds: float) -> None:
-        self.length = length
-        self.sample_rate = sample_rate
-        self.num_samples = int(sample_rate * seconds)
-        self.time = torch.linspace(0, seconds, self.num_samples)
-
-    def __len__(self) -> int:
-        return self.length
-
-    def __getitem__(self, index: int) -> Tensor:
-        frequency = 110.0 + 17.0 * (index % 12)
-        phase = (index % 7) / 7.0
-        wave_a = torch.sin(2.0 * torch.pi * frequency * self.time + phase)
-        wave_b = 0.25 * torch.sin(2.0 * torch.pi * frequency * 2.0 * self.time)
-        noise = 0.01 * torch.randn_like(wave_a)
-        return normalize_clip(wave_a + wave_b + noise)

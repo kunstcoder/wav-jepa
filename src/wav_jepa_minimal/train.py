@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
-from wav_jepa_minimal.audio import SyntheticWaveDataset, WaveDirectoryDataset
+from wav_jepa_minimal.audio import WaveDirectoryDataset
 from wav_jepa_minimal.config import (
     AUDIOSET_DEFAULTS,
     WavJepaConfig,
@@ -24,6 +24,15 @@ def parse_args() -> argparse.Namespace:
         "--data-dir", type=Path, required=True, help="Directory of AudioSet WAV files."
     )
     parser.add_argument("--output-dir", type=Path, default=Path("runs/audioset-minimal"))
+    parser.add_argument(
+        "--checkpoint-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Directory for checkpoint files. Defaults to <output-dir> for backward "
+            "compatibility. Use this to keep checkpoints separate from logs/configs."
+        ),
+    )
     parser.add_argument("--dataset-name", default=AUDIOSET_DEFAULTS.dataset_name)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--max-steps", type=int, default=AUDIOSET_DEFAULTS.max_steps)
@@ -77,28 +86,16 @@ def parse_args() -> argparse.Namespace:
         help="Disable TensorBoard scalar and hparams logging.",
     )
     parser.add_argument("--seed", type=int, default=AUDIOSET_DEFAULTS.seed)
-    parser.add_argument(
-        "--synthetic",
-        action="store_true",
-        help="Use synthetic AudioSet-shaped waves for smoke tests.",
-    )
     return parser.parse_args()
 
 
 def build_loader(args: argparse.Namespace) -> DataLoader[torch.Tensor]:
-    if args.synthetic:
-        dataset = SyntheticWaveDataset(
-            length=max(args.batch_size * max(args.steps_per_epoch or 1, 1), args.batch_size),
-            sample_rate=args.sample_rate,
-            seconds=args.process_seconds,
-        )
-    else:
-        dataset = WaveDirectoryDataset(
-            root=args.data_dir,
-            sample_rate=args.sample_rate,
-            seconds=args.process_seconds,
-            random_crop=True,
-        )
+    dataset = WaveDirectoryDataset(
+        root=args.data_dir,
+        sample_rate=args.sample_rate,
+        seconds=args.process_seconds,
+        random_crop=True,
+    )
     return DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -108,15 +105,21 @@ def build_loader(args: argparse.Namespace) -> DataLoader[torch.Tensor]:
     )
 
 
+def write_config(output_dir: Path, config: WavJepaConfig) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with (output_dir / "config.json").open("w", encoding="utf-8") as handle:
+        json.dump(config.to_dict(), handle, indent=2)
+
+
 def save_checkpoint(
-    output_dir: Path,
+    checkpoint_dir: Path,
     model: WavJepaModel,
     optimizer: torch.optim.Optimizer,
     epoch: int,
     step: int,
     checkpoint_name: str = "checkpoint_last.pt",
-) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
+) -> Path:
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
     checkpoint = {
         "model": model.state_dict(),
         "optimizer": optimizer.state_dict(),
@@ -124,9 +127,10 @@ def save_checkpoint(
         "epoch": epoch,
         "step": step,
     }
-    torch.save(checkpoint, output_dir / checkpoint_name)
-    with (output_dir / "config.json").open("w", encoding="utf-8") as handle:
-        json.dump(model.config.to_dict(), handle, indent=2)
+    checkpoint_path = checkpoint_dir / checkpoint_name
+    torch.save(checkpoint, checkpoint_path)
+    write_config(checkpoint_dir, model.config)
+    return checkpoint_path
 
 
 def train(args: argparse.Namespace) -> None:
@@ -143,6 +147,9 @@ def train(args: argparse.Namespace) -> None:
         transformer_layers=args.transformer_layers,
         attention_heads=args.attention_heads,
     )
+    checkpoint_dir = args.checkpoint_dir or args.output_dir
+    write_config(args.output_dir, config)
+
     model = WavJepaModel(config).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -152,6 +159,11 @@ def train(args: argparse.Namespace) -> None:
     )
 
     tensorboard_log_dir = args.tensorboard_log_dir or args.output_dir / "tensorboard"
+    print(
+        f"output_dir={args.output_dir} checkpoint_dir={checkpoint_dir} "
+        f"tensorboard_log_dir={tensorboard_log_dir} "
+        f"checkpoint_interval_steps={args.checkpoint_interval_steps}"
+    )
     writer = None
     if not args.no_tensorboard:
         from torch.utils.tensorboard import SummaryWriter
@@ -168,6 +180,7 @@ def train(args: argparse.Namespace) -> None:
                 "batch_size": args.batch_size,
                 "learning_rate": args.learning_rate,
                 "weight_decay": args.weight_decay,
+                "checkpoint_dir": str(checkpoint_dir),
                 "checkpoint_interval_steps": args.checkpoint_interval_steps,
                 "encoder_dim": config.encoder_dim,
                 "predictor_dim": config.predictor_dim,
@@ -219,26 +232,26 @@ def train(args: argparse.Namespace) -> None:
                     and global_step % checkpoint_interval_steps == 0
                 ):
                     checkpoint_name = f"checkpoint_step_{global_step:08d}.pt"
-                    save_checkpoint(
-                        args.output_dir,
+                    checkpoint_path = save_checkpoint(
+                        checkpoint_dir,
                         model,
                         optimizer,
                         epoch=epoch + 1,
                         step=global_step,
                         checkpoint_name=checkpoint_name,
                     )
-                    print(f"saved_checkpoint={args.output_dir / checkpoint_name}")
+                    print(f"saved_checkpoint={checkpoint_path}")
 
                 if global_step == 1 or global_step % 10 == 0:
                     print(
                         f"dataset={config.dataset_name} epoch={epoch + 1} step={global_step} "
-                        f"loss={metrics['loss']:.4f} "
-                        f"context={metrics['context_fraction']:.2f} "
-                        f"target={metrics['target_fraction']:.2f}"
+                        f"loss={metrics['loss']:.8f} "
+                        f"context={metrics['context_fraction']:.4f} "
+                        f"target={metrics['target_fraction']:.4f}"
                     )
             if writer is not None and epoch_steps > 0:
                 writer.add_scalar("epoch/loss", epoch_loss / epoch_steps, epoch + 1)
-            save_checkpoint(args.output_dir, model, optimizer, epoch=epoch + 1, step=global_step)
+            save_checkpoint(checkpoint_dir, model, optimizer, epoch=epoch + 1, step=global_step)
             if global_step >= args.max_steps:
                 break
     finally:
