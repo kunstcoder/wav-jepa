@@ -19,7 +19,6 @@ frozen embeddings for quick representation checks.
 
 - Raw PCM WAV loading with mono conversion, fixed-length crop/pad, and per-clip
   normalization.
-- AudioSet-shaped synthetic waveform data for smoke tests without a local dataset.
 - WavJEPA-style pretraining with a convolutional patch encoder, context transformer,
   EMA target transformer, predictor head, contiguous context/target masks, Smooth L1
   latent prediction loss, gradient clipping, and last-checkpoint saving.
@@ -69,15 +68,11 @@ loader does not resample audio.
 wavjepa-train --data-dir data/audioset --output-dir runs/audioset-minimal --epochs 10
 ```
 
-For a dependency-light smoke run without audio files:
-
-```bash
-wavjepa-train --data-dir data/audioset --synthetic --epochs 1 --steps-per-epoch 2
-```
-
 The upstream AudioSet clip length default is exposed as `--process-seconds` and defaults
-to `2.01`. The latest checkpoint is written to `checkpoint_last.pt` and the model
-configuration is written to `config.json` under `--output-dir`.
+to `2.01`. The model configuration is written to `config.json` under `--output-dir`.
+By default, checkpoints are also written under `--output-dir` for backward compatibility.
+Pass `--checkpoint-dir` to store `checkpoint_last.pt` and periodic checkpoint snapshots
+in a separate directory while leaving logs/configuration under `--output-dir`.
 
 To automatically save extra checkpoints at a fixed global-step period, pass
 `--checkpoint-interval-steps`. For example, `--checkpoint-interval-steps 10000` saves
@@ -89,12 +84,37 @@ uses the name `checkpoint_step_<step>.pt`, while normal epoch-end saving still u
 wavjepa-train \
   --data-dir data/audioset \
   --output-dir runs/audioset-minimal \
+  --checkpoint-dir /mnt/checkpoints/wavjepa \
   --epochs 10 \
   --checkpoint-interval-steps 10000
 ```
 
 Use `--checkpoint-interval-steps 0`, `--checkpoint-interval-steps none`, or omit the
 flag to disable periodic step checkpoints.
+
+## Upstream AudioSet config review
+
+The checked-in defaults were compared against the original `labhamlet/wavjepa` Hydra
+configuration files (`configs/base.yaml`, `configs/data/audioset.yaml`,
+`configs/extractor/wavjepa.yaml`, `configs/masker/AudioSet.yaml`,
+`configs/optimizer/adamW.yaml`, and `configs/trainer/default_trainer.yaml`). The values
+implemented here match the upstream AudioSet training config where this minimal trainer
+has equivalent functionality:
+
+- Data: `name=AudioSet`, `sr=16000`, `in_channels=1`, `samples_per_audio=8`, and
+  `process_seconds=2.01`.
+- Extractor: `[(512, 10, 5)] + [(512, 3, 2)] * 4 + [(512, 2, 2)]`, no dropout, no
+  convolution bias, and no depthwise convolution.
+- Masker: `target_masks_per_context=4`, `context_mask_prob=0.65`,
+  `context_mask_length=10`, `target_prob=0.25`, `target_length=10`, and
+  `ratio_cutoff=0.1`.
+- Optimizer/trainer: AdamW `lr=0.0004`, betas `(0.9, 0.98)`, `weight_decay=0.04`,
+  batch size `32`, seed `42`, and `max_steps=375000`.
+
+Known intentional differences: this repository accepts recursive WAV directories instead
+of upstream WebDataset TAR shards, keeps only the minimal self-supervised/KNN path, and
+does not implement upstream Lightning-only runtime switches such as bf16 mixed precision,
+`torch.compile`, two-GPU scheduling, or top-K layer averaging.
 
 
 ## Dataclass-based configuration
@@ -176,7 +196,8 @@ small_config = replace(config, encoder_dim=384, predictor_dim=192)
 ### Checkpoint serialization
 
 `WavJepaConfig.to_dict()` converts the dataclass into a JSON-serializable dictionary
-that is written to `<output-dir>/config.json` and embedded in `checkpoint_last.pt`.
+that is written to `<output-dir>/config.json`, mirrored to `<checkpoint-dir>/config.json`
+when a separate checkpoint directory is selected, and embedded in `checkpoint_last.pt`.
 `WavJepaConfig.from_dict()` performs the inverse operation and includes a small legacy
 key map so checkpoints saved before the naming cleanup can still be loaded.
 
@@ -184,7 +205,7 @@ key map so checkpoints saved before the naming cleanup can still be loaded.
 
 ```text
 src/wav_jepa_minimal/
-  audio.py      # WAV discovery/loading, fixed-length crop/pad, synthetic smoke dataset
+  audio.py      # WAV discovery/loading, fixed-length crop/pad
   config.py     # dataclass defaults, model config, mask config, conv spec
   defaults.py   # backward-compatible re-exports for older imports
   masking.py    # contiguous context/target mask sampling

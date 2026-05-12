@@ -37,13 +37,13 @@ standard Python modules and argparse CLIs.
 ## Implementation updates
 
 - Added a package under `src/wav_jepa_minimal`.
-- Added `WaveDirectoryDataset` and `SyntheticWaveDataset` for real AudioSet-style WAV and
-  smoke-test training inputs.
+- Added `WaveDirectoryDataset` for real AudioSet-style WAV training inputs.
 - Added upstream-aligned default constants in `defaults.py`.
 - Added a compact CNN patch encoder, transformer blocks, JEPA masking, predictor, and
   EMA target encoder.
 - Updated the training CLI to expose `--process-seconds` with an AudioSet default of
   `2.01` instead of the earlier generic `seconds=2.0` default.
-- Added `wavjepa-train` CLI for self-supervised training and checkpoint saving.
+- Added `wavjepa-train` CLI for self-supervised training with configurable checkpoint
+  directories and checkpoint saving.
 - Added `wavjepa-knn` CLI for parent-directory-label KNN evaluation.
 - Added project metadata and console scripts in `pyproject.toml`.
