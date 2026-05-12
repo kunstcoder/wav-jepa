@@ -15,10 +15,31 @@ decoder/predictor dimension `384`, 12 transformer layers, and AudioSet masker de
 Instead of HEAR/ARCH evaluation scripts, the repo provides a small KNN classifier over
 frozen embeddings for quick representation checks.
 
+## Implemented scope
+
+- Raw PCM WAV loading with mono conversion, fixed-length crop/pad, and per-clip
+  normalization.
+- AudioSet-shaped synthetic waveform data for smoke tests without a local dataset.
+- WavJEPA-style pretraining with a convolutional patch encoder, context transformer,
+  EMA target transformer, predictor head, contiguous context/target masks, Smooth L1
+  latent prediction loss, gradient clipping, and last-checkpoint saving.
+- TensorBoard training monitoring for loss, mask fractions, learning rate, gradient
+  norm, EMA decay, epoch loss, dataset metadata, and hyperparameters.
+- Lightweight KNN evaluation over frozen utterance-level embeddings.
+
 ## Install
+
+Install the package in editable mode:
 
 ```bash
 python -m pip install -e .
+```
+
+Alternatively, install runtime dependencies from `requirements.txt` first:
+
+```bash
+python -m pip install -r requirements.txt
+python -m pip install -e . --no-deps
 ```
 
 ## Data layout
@@ -38,7 +59,9 @@ data/knn_test/dog/c.wav
 ```
 
 Audio is loaded with the Python standard library `wave` module, converted to mono,
-center-cropped or padded to `process_seconds` seconds, and normalized per clip.
+center-cropped or randomly cropped/padded to `process_seconds` seconds, and normalized
+per clip. Files must already match the configured sample rate because this minimal
+loader does not resample audio.
 
 ## Train
 
@@ -53,7 +76,42 @@ wavjepa-train --data-dir data/audioset --synthetic --epochs 1 --steps-per-epoch 
 ```
 
 The upstream AudioSet clip length default is exposed as `--process-seconds` and defaults
-to `2.01`.
+to `2.01`. The latest checkpoint is written to `checkpoint_last.pt` and the model
+configuration is written to `config.json` under `--output-dir`.
+
+## TensorBoard monitoring
+
+Training writes TensorBoard event files by default to `<output-dir>/tensorboard` and
+prints the resolved log directory at startup:
+
+```bash
+wavjepa-train \
+  --data-dir data/audioset \
+  --output-dir runs/audioset-minimal \
+  --epochs 10
+
+tensorboard --logdir runs/audioset-minimal/tensorboard
+```
+
+Use `--tensorboard-log-dir` to choose a different event directory, or
+`--no-tensorboard` to disable event writing:
+
+```bash
+wavjepa-train \
+  --data-dir data/audioset \
+  --output-dir runs/audioset-minimal \
+  --tensorboard-log-dir runs/tb/audioset-minimal
+```
+
+Logged scalars include:
+
+- `train/loss`
+- `train/context_fraction`
+- `train/target_fraction`
+- `train/learning_rate`
+- `train/grad_norm`
+- `train/ema_decay`
+- `epoch/loss`
 
 ## KNN evaluation
 
